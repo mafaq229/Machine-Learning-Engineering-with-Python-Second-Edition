@@ -7,6 +7,25 @@ plt.rcParams.update({'font.size': 22})
 from prophet import Prophet
 import kaggle
 
+from prophet.diagnostics import cross_validation
+from prophet.diagnostics import performance_metrics
+import mlflow
+import mlflow.pyfunc
+
+
+class FbProphetWrapper(mlflow.pyfunc.PythonModel):
+    def __init__(self, model):
+        self.model = model
+        super().__init__()
+    def load_context(self, context):
+        from prophet import Prophet
+        return
+    def predict(self, context, model_input):
+        future = self.model.make_future_dataframe(
+            periods=model_input["periods"][0])
+        return self.model.predict(future)
+    
+
 def download_kaggle_dataset(kaggle_dataset: str ="pratyushakar/rossmann-store-sales") -> None:
     api = kaggle.api
     print(api.get_config_value('username'))
@@ -45,17 +64,34 @@ def train_predict(
     df_train = df.copy().iloc[0:train_index]
     df_test = df.copy().iloc[train_index:]
 
-    #create Prophet model
-    model=Prophet(
-        yearly_seasonality=seasonality['yearly'],
-        weekly_seasonality=seasonality['weekly'],
-        daily_seasonality=seasonality['daily'],
-        interval_width = 0.95
-    )
+    with mlflow.start_run():
+    # Experiment code and mlflow logging goes in here
+        #create Prophet model
+        model=Prophet(
+            yearly_seasonality=seasonality['yearly'],
+            weekly_seasonality=seasonality['weekly'],
+            daily_seasonality=seasonality['daily'],
+        )
 
-    # train and predict
-    model.fit(df_train)
-    predicted = model.predict(df_test)
+        # train and predict
+        model.fit(df_train)
+        predicted = model.predict(df_test)
+
+        # Evaluate metrics
+        df_cv = cross_validation(model, initial="500 days", 
+                            period="125 days", horizon="50 days")
+        df_p = performance_metrics(df_cv)
+
+        # Log parameter, metrics, and model to MLflow
+        mlflow.log_metric("rmse", df_p.loc[0, "rmse"])
+
+        mlflow.pyfunc.log_model("model", python_model=FbProphetWrapper(model))
+        print(
+            "Logged model with URI: runs:/{run_id}/model".format(
+                run_id=mlflow.active_run().info.run_id
+            )
+        )
+    
     return predicted, df_train, df_test, train_index
 
 
